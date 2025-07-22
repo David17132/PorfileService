@@ -1,0 +1,895 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UIS = game:GetService("UserInputService")
+local tweenService = game:GetService("TweenService")
+local runService = game:GetService("RunService")
+
+local StateManager = require(ReplicatedStorage.Modules.PlayerData.ClientState)
+local Tween = require(ReplicatedStorage.Libs.Tween)
+local TowersConfig = require(ReplicatedStorage.Configs.Towers)
+local TowersModule = require(ReplicatedStorage.Modules.Towers.TowersModule)
+local enchantsModule = require(ReplicatedStorage.Modules.Misc.Enchants)
+local Formatter = require(ReplicatedStorage.Libs.Formatter)
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local inventory = playerGui:WaitForChild("Inventory")
+local sideDock = playerGui:WaitForChild("SideDock")
+local frame: Frame = inventory:WaitForChild("InventoryFrame")
+local sideContainer = sideDock:WaitForChild("Container")
+local holder = frame:WaitForChild("HolderFrame")
+local inventoryButton = sideContainer:WaitForChild("InventoryButton")
+local units = holder:WaitForChild("Units")
+local info = frame:WaitForChild("TowerStats")
+local template = script:WaitForChild("Template")
+
+local mouse = player:GetMouse()
+
+local Remotes = ReplicatedStorage.Remotes.Towers
+
+local selected = nil
+local deleting = 0
+local itemsVisibleChanged = {}
+
+local rarities = {"Common", "Uncommon", "Rare", "Epic", "Mythic", "Secret", "Nightmare"}
+
+local function hasEnchant(enchant): boolean
+	if not enchant or typeof(enchant) ~= "string" then
+		return false
+	end
+	if enchant and #enchant > 1 then
+		return true
+	end
+	return false
+end
+
+local function update(id, img)
+	local tower = StateManager.GetData().Towers[id]
+	if not tower then return end
+	local towerName = tower.Name
+	local shiny = if tower.Shiny then "Shiny " else ""
+
+	local exists = ReplicatedStorage.Remotes.Misc.GetExists:InvokeServer(shiny..towerName)
+
+	local config = TowersConfig.Towers[towerName]
+
+	if selected == id then
+		info.Visible = false
+		selected = nil
+		return
+	else
+		info.Visible = true
+	end
+
+	selected = id
+
+	if img then
+		local towerFrame = if hasEnchant(tower.Enchant) and not tower.Shiny then units:FindFirstChild(tower.Enchant..tower.Name) elseif hasEnchant(tower.Enchant) and tower.Shiny then units:FindFirstChild("Shiny"..tower.Enchant..tower.Name) elseif tower.Shiny then units:FindFirstChild("Shiny"..tower.Name) else units:FindFirstChild(tower.Name)
+		if not towerFrame then
+			if UIS.MouseEnabled then
+				local MousePosition = (Vector2.new(mouse.X, mouse.Y) - frame.AbsolutePosition) / frame.AbsoluteSize
+				info.Position = UDim2.fromScale(MousePosition.X, MousePosition.Y)
+			else
+				local trueAbs = UDim2.new(0, towerFrame.AbsolutePosition.X, 0, towerFrame.AbsolutePosition.Y, 0)
+				info.Position = if towerFrame then trueAbs - UDim2.new(0, frame.AbsolutePosition.X, 0, frame.AbsolutePosition.Y) else frame.Position
+			end
+		end
+
+		local conn
+		conn = units:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+			info.Visible = false
+			conn:Disconnect()
+		end)
+	end
+
+	info.Frame.TowerName.Text = if tower.Shiny then "Shiny "..towerName else towerName
+	info.Frame.Rarity.Text = config.Rarity
+
+	info.Frame.Rarity:ClearAllChildren()
+	ReplicatedStorage.Gradients[config.Rarity]:Clone().Parent = info.Frame.Rarity
+
+	local dmg = if config.TowerStats and config.TowerStats.Damage then config.TowerStats.Damage else config.Damage
+	local range = if config.TowerStats and config.TowerStats.Range then config.TowerStats.Range else config.Range
+	local cooldown = if config.TowerStats and config.TowerStats.Cooldown then config.TowerStats.Cooldown else config.Cooldown
+	local dmgBoost = if config.TowerStats and config.TowerStats.DamageBoost then config.TowerStats.DamageBoost else nil
+	local rangeBoost = if config.TowerStats and config.TowerStats.RangeBoost then config.TowerStats.RangeBoost else nil
+	local farm = if config.TowerStats and config.TowerStats.Farm then config.TowerStats.Farm else nil
+
+	local shinyString = if tower.Shiny then " (+25%)" else ""
+
+	if rangeBoost then
+		info.Frame.Damage.TextColor3 = Color3.fromRGB(76, 207, 255)
+	else 
+		info.Frame.Damage.TextColor3 = Color3.fromRGB(255, 0, 0)
+	end
+
+	info.Frame.Type.Text = "Type: "..config.Type
+	if dmgBoost then
+		info.Frame.Damage.Text = "Damage Boost: x"..dmgBoost..shinyString
+	elseif rangeBoost then
+		info.Frame.Damage.Text = "Range Boost: x"..rangeBoost..shinyString
+	elseif farm then
+		info.Frame.Damage.Text = "Farm: +"..farm
+	else
+		info.Frame.Damage.Text = "Damage: "..dmg..enchantsModule.GetStatMulti(player, id, "Damage", true)..shinyString
+	end
+	info.Frame.Range.Text = "Range: "..range..enchantsModule.GetStatMulti(player, id, "Range", true)
+	info.Frame.Cooldown.Text = "Cooldown: "..cooldown..enchantsModule.GetStatMulti(player, id, "Speed", true)
+	info.Frame.Equip.TextLabel.Text = if tower.Equipped then "Unequip" else "Equip"
+
+	if exists > 0 then
+		info.Frame.Exists.Text = Formatter.FormatCompact(exists).." Exists"
+	else
+		info.Frame.Exists.Text = "Exists: N/A"
+	end
+end
+
+local function resort(tower): boolean
+	local data = StateManager.GetData()
+	if not data then return false end
+	if not tower then
+		-- SORT ENTIRE UNITS
+		for _, tower in data.Towers do
+			for _, v in pairs(units:GetChildren()) do
+				if not v:IsA("ImageButton") or not v:FindFirstChild("TowerName") then continue end
+				if not tower.Shiny and v.TowerName.Value == tower.Name then
+					local amt = 0
+					for _, a in pairs(data.Towers) do
+						if a.Enchant and #a.Enchant > 2 then continue end
+						if not a.Shiny and a.Name == v.TowerName.Value then
+							if a.Equipped then
+								v.Name = a.ID
+								updateFrame(a.ID)
+							end
+							amt += 1
+						end
+					end
+					v.Info.Visible = true
+					v.Info.Text = "x"..amt
+					return true
+				elseif tower.Shiny and string.find(v.TowerName.Value, "Shiny") then
+					if tower.Enchant and #tower.Enchant > 2 then
+						continue
+					end
+					local towerName = data.Towers[v.Name].Name
+					if towerName ~= tower.Name then continue end
+					local amt = 0
+					for _, a in pairs(data.Towers) do
+						if a.Enchant and #a.Enchant > 2 then continue end
+						if a.Shiny and a.Name == towerName then
+							if a.Equipped then
+								v.Name = a.ID
+								updateFrame(a.ID)
+							end
+							amt += 1
+						end
+					end
+					v.Info.Visible = true
+					v.Info.Text = "x"..amt
+					return true
+				end
+			end
+		end
+	else
+		-- SORT SPECIFIC UNIT
+		for _, v in pairs(units:GetChildren()) do
+			if not v:IsA("ImageButton") or not v:FindFirstChild("TowerName") then continue end
+			if not tower.Shiny and v.TowerName.Value == tower.Name then
+				local amt = 0
+				for _, a in pairs(data.Towers) do
+					if a.Enchant and #a.Enchant > 2 then continue end
+					if not a.Shiny and a.Name == v.TowerName.Value then
+						if a.Equipped then
+							v.Name = a.ID
+							updateFrame(a.ID)
+						end
+						amt += 1
+					end
+				end
+				v.Info.Visible = true
+				v.Info.Text = "x"..amt
+				return true
+			elseif tower.Shiny and string.find(v.TowerName.Value, "Shiny") then
+				if tower.Enchant and #tower.Enchant > 2 then
+					continue
+				end
+				local towerName = data.Towers[v.Name].Name
+				if towerName ~= tower.Name then continue end
+				local amt = 0
+				for _, a in pairs(data.Towers) do
+					if a.Enchant and #a.Enchant > 2 then continue end
+					if a.Shiny and a.Name == towerName then
+						if a.Equipped then
+							v.Name = a.ID
+							updateFrame(a.ID)
+						end
+						amt += 1
+					end
+				end
+				v.Info.Visible = true
+				v.Info.Text = "x"..amt
+				return true
+			end
+		end
+	end
+	return false
+end
+
+local function clearInv()
+	for _, v in units:GetChildren() do
+		if not v:IsA("ImageButton") then continue end
+		v:Destroy()
+	end
+end
+
+local connection_inv = {}
+
+local function onClickInvFrame(clonedTemplate: ImageButton, idx: string)
+	local conn1
+	conn1 = clonedTemplate.Activated:Connect(function()
+		if frame.DeleteFrame.Visible or frame.ConfirmFrame.Visible then
+		elseif player:FindFirstChild("EnchantTower") then
+			frame.Items.Visible = true
+			frame.Shop.Visible = true
+			frame.Units.Visible = true
+			frame.Quests.Visible = true
+			frame.EnchantText.Visible = false
+			frame.ItemText.Visible = false
+			frame.TradingText.Visible = false
+			player.EnchantTower:Destroy()
+			ReplicatedStorage.Remotes.Misc.Enchant.Bindable:Fire(idx)
+		elseif player:FindFirstChild("UsingItem") then
+			frame.Items.Visible = true
+			frame.Shop.Visible = true
+			frame.Units.Visible = true
+			frame.Quests.Visible = true
+			frame.EnchantText.Visible = false
+			frame.ItemText.Visible = false
+			frame.TradingText.Visible = false
+			for _, v in pairs(itemsVisibleChanged) do
+				v.Visible = true
+			end
+			itemsVisibleChanged = {}
+
+			local itemName = player.UsingItem.Value
+			player.UsingItem:Destroy()
+			ReplicatedStorage.Remotes.Misc.UseItem.Bindable:Fire(idx, itemName)
+		elseif player:FindFirstChild("TradingItem") then
+			if #units:GetChildren() == 3 then
+				ReplicatedStorage.Remotes.Misc.Alert.Bindable:Fire("You can't trade your only unit!")
+				return
+			end
+			player.TradingItem.Value = idx
+			frame.TradeAmount.Visible = true
+		else
+			task.spawn(update, idx, true)
+		end
+	end)
+	connection_inv[clonedTemplate] = conn1
+end
+
+local function updateInv()
+	local data = StateManager.GetData()
+	if not data then return end
+	pcall(clearInv)
+	for idx, unit in data.Towers do
+		local config = TowersConfig.Towers[unit.Name]
+		if not config then continue end
+		local rarity = config.Rarity
+		
+		if not unit.Shiny and not hasEnchant(unit.Enchant) then
+			local findExisting = units:FindFirstChild(unit.Name)
+			if findExisting and not findExisting.Shiny.Visible then
+				findExisting:SetAttribute("Owned", findExisting:GetAttribute("Owned")+1)
+				findExisting.Info.Text = `x{findExisting:GetAttribute("Owned")}`
+				findExisting.Info.Visible = true
+				if unit.Equipped then
+					if connection_inv[findExisting] then
+						connection_inv[findExisting]:Disconnect()
+						task.defer(onClickInvFrame, findExisting, idx)
+					end
+					local rarityLayout = 10-(if table.find(rarities, rarity) then table.find(rarities, rarity) else 0)
+					findExisting.LayoutOrder = if unit.Equipped then rarityLayout-100 else rarityLayout
+					findExisting.TowerPrice.ImageColor3 = if unit.Equipped then Color3.fromRGB(0, 255, 0) else Color3.fromRGB(255, 0, 0)
+					findExisting.TowerPrice.Info.TextColor3 = if unit.Equipped then Color3.fromRGB(0, 255, 0) else Color3.fromRGB(255, 0, 0)
+				end
+				continue
+			end
+		else
+			if hasEnchant(unit.Enchant) and not unit.Shiny then
+				local findSameEnchant = units:FindFirstChild(unit.Enchant..unit.Name)
+				if findSameEnchant then
+					findSameEnchant:SetAttribute("Owned", findSameEnchant:GetAttribute("Owned")+1)
+					findSameEnchant.Info.Text = `x{findSameEnchant:GetAttribute("Owned")}`
+					findSameEnchant.Info.Visible = true
+					if unit.Equipped then
+						if connection_inv[findSameEnchant] then
+							connection_inv[findSameEnchant]:Disconnect()
+							task.defer(onClickInvFrame, findSameEnchant, idx)
+						end
+						local rarityLayout = 10-(if table.find(rarities, rarity) then table.find(rarities, rarity) else 0)
+						findSameEnchant.LayoutOrder = if unit.Equipped then rarityLayout-100 else rarityLayout
+						findSameEnchant.TowerPrice.ImageColor3 = if unit.Equipped then Color3.fromRGB(0, 255, 0) else Color3.fromRGB(255, 0, 0)
+						findSameEnchant.TowerPrice.Info.TextColor3 = if unit.Equipped then Color3.fromRGB(0, 255, 0) else Color3.fromRGB(255, 0, 0)
+					end
+					continue
+				end
+			end
+			if hasEnchant(unit.Enchant) and unit.Shiny then
+				local findShiny2 = units:FindFirstChild("Shiny"..unit.Enchant..unit.Name)
+				if findShiny2 and findShiny2.Shiny.Visible then
+					findShiny2:SetAttribute("Owned", findShiny2:GetAttribute("Owned")+1)
+					findShiny2.Info.Text = `x{findShiny2:GetAttribute("Owned")}`
+					findShiny2.Info.Visible = true
+					if unit.Equipped then
+						if connection_inv[findShiny2] then
+							connection_inv[findShiny2]:Disconnect()
+							task.defer(onClickInvFrame, findShiny2, idx)
+						end
+						local rarityLayout = 10-(if table.find(rarities, rarity) then table.find(rarities, rarity) else 0)
+						findShiny2.LayoutOrder = if unit.Equipped then rarityLayout-100 else rarityLayout
+						findShiny2.TowerPrice.ImageColor3 = if unit.Equipped then Color3.fromRGB(0, 255, 0) else Color3.fromRGB(255, 0, 0)
+						findShiny2.TowerPrice.Info.TextColor3 = if unit.Equipped then Color3.fromRGB(0, 255, 0) else Color3.fromRGB(255, 0, 0)
+					end
+					continue
+				end
+			end
+			if not hasEnchant(unit.Enchant) and unit.Shiny then
+				local findShiny = units:FindFirstChild("Shiny"..unit.Name)
+				if findShiny and findShiny.Shiny.Visible then
+					findShiny:SetAttribute("Owned", findShiny:GetAttribute("Owned")+1)
+					findShiny.Info.Text = `x{findShiny:GetAttribute("Owned")}`
+					findShiny.Info.Visible = true
+					if unit.Equipped then
+						if connection_inv[findShiny] then
+							connection_inv[findShiny]:Disconnect()
+							task.defer(onClickInvFrame, findShiny, idx)
+						end
+						local rarityLayout = 10-(if table.find(rarities, rarity) then table.find(rarities, rarity) else 0)
+						findShiny.LayoutOrder = if unit.Equipped then rarityLayout-100 else rarityLayout
+						findShiny.TowerPrice.ImageColor3 = if unit.Equipped then Color3.fromRGB(0, 255, 0) else Color3.fromRGB(255, 0, 0)
+						findShiny.TowerPrice.Info.TextColor3 = if unit.Equipped then Color3.fromRGB(0, 255, 0) else Color3.fromRGB(255, 0, 0)
+					end
+					continue
+				end
+			end
+		end
+		local gradColor = if unit.Shiny then ReplicatedStorage.Gradients.Shiny.Color elseif config.Rarity and ReplicatedStorage.Gradients:FindFirstChild(config.Rarity) then ReplicatedStorage.Gradients[config.Rarity].Color else ReplicatedStorage.Gradients.Common.Color
+
+		local rarityLayout = 10-(if table.find(rarities, rarity) then table.find(rarities, rarity) else 0)
+
+		local clonedTemplate = template:Clone()
+		clonedTemplate.Name = if hasEnchant(unit.Enchant) and not unit.Shiny then unit.Enchant..unit.Name elseif hasEnchant(unit.Enchant) and unit.Shiny then "Shiny"..unit.Enchant..unit.Name elseif unit.Shiny then "Shiny"..unit.Name else unit.Name
+		clonedTemplate.LayoutOrder = if unit.Equipped then rarityLayout-100 else rarityLayout
+		clonedTemplate.TowerPrice.Info.Text = "$ "..config.PlacePrice or "$ 0"
+		clonedTemplate.TowerPrice.ImageColor3 = if unit.Equipped then Color3.fromRGB(0, 255, 0) else Color3.fromRGB(255, 0, 0)
+		clonedTemplate.TowerPrice.Info.TextColor3 = if unit.Equipped then Color3.fromRGB(0, 255, 0) else Color3.fromRGB(255, 0, 0)
+		clonedTemplate.BorderImage.TowerImage.Image = config.Image or ""
+		clonedTemplate.BorderImage.UIGradient.Color = gradColor
+		clonedTemplate.Frame.UIGradient.Color = gradColor
+		clonedTemplate.TowerName.Value = if hasEnchant(unit.Enchant) and not unit.Shiny then unit.Enchant..unit.Name elseif hasEnchant(unit.Enchant) and unit.Shiny then "Shiny"..unit.Enchant..unit.Name elseif unit.Shiny then "Shiny"..unit.Name else unit.Name
+		clonedTemplate.Shiny.Visible = if unit.Shiny then true else false
+		clonedTemplate.Info.Text = "x1"
+		clonedTemplate.Info.Visible = false
+
+		clonedTemplate:SetAttribute("Owned", 1)
+		clonedTemplate:SetAttribute("Rarity", unit.Rarity)
+		clonedTemplate:SetAttribute("Unit", unit.Name)
+		clonedTemplate:SetAttribute("Shiny", unit.Shiny)
+
+		clonedTemplate.Parent = units
+		clonedTemplate.Visible = true
+
+		if hasEnchant(unit.Enchant) and ReplicatedStorage.Objects.Enchants:FindFirstChild(unit.Enchant) then
+			local newFrame = ReplicatedStorage.Objects.Enchants[unit.Enchant]:Clone()
+			newFrame.Parent = clonedTemplate
+		end
+
+		Tween:AddButton(clonedTemplate, nil, "ButtonClick", nil, true)
+		
+		task.spawn(onClickInvFrame, clonedTemplate, idx)
+	end
+	--task.defer(resort)
+end
+
+local function generate(tower, amount, special, deleting, filter: boolean?)
+	local towerID = if typeof(tower) == "table" then tower.ID else tower
+
+	if filter and deleting and units:FindFirstChild(towerID) then
+		units[towerID]:Destroy()
+		return
+	end
+
+	if units:FindFirstChild(towerID) and units:FindFirstChild(towerID):FindFirstChild("Info") and not units:FindFirstChild(towerID).Info.Visible and deleting then
+		units[towerID]:Destroy()
+	elseif units:FindFirstChild(towerID) and special then
+		local name = units[towerID].TowerName.Value
+		units[towerID]:Destroy()
+		local data = StateManager.GetData()
+		local shiny = if data.Towers[towerID] and data.Towers[towerID].Shiny then true else nil
+		for _, newTower in pairs(data.Towers) do
+			if newTower.Name == tower.Name and newTower.Shiny == shiny then
+				generate(newTower)
+			elseif newTower.ID ~= towerID and newTower.Name == name then
+				generate(newTower)
+			end
+		end
+		return
+	elseif units:FindFirstChild(towerID) then
+		if amount and amount <= 0 then
+			units[towerID]:Destroy()
+		elseif not string.find(units[towerID].TowerName.Value, "Special") and not string.find(units[towerID].TowerName.Value, "Shiny") then
+			local data = StateManager.GetData()
+			local amt = 0
+			for _, a in pairs(data.Towers) do
+				if a.Enchant and #a.Enchant > 2 then continue end
+				if not a.Shiny and a.Name == units[towerID].TowerName.Value then
+					if not data.Towers[towerID] then
+						units[towerID].Name = a.ID
+						towerID = a.ID
+					end
+					amt += 1
+				end
+			end
+			if amt <= 0 then
+				units[towerID]:Destroy()
+			else
+				units[towerID].Info.Text = "x"..amt
+			end
+		elseif string.find(units[towerID].TowerName.Value, "Shiny") then
+			local data = StateManager.GetData()
+			local amt = 0
+			local towerName = string.gsub(units[towerID].TowerName.Value, "Shiny", "")
+			for _, a in pairs(data.Towers) do
+				if a.Enchant and #a.Enchant > 2 then continue end
+				if a.Name == towerName and a.Shiny then
+					if not data.Towers[towerID] then
+						units[towerID].Name = a.ID
+						towerID = a.ID
+					end
+					amt += 1
+				end
+			end
+			if amt <= 0 then
+				units[towerID]:Destroy()
+			else
+				units[towerID].Info.Text = "x"..amt
+			end
+		end
+		return
+	end
+
+	if not filter then
+		if resort(tower) then
+			return
+		end
+
+		local config = TowersConfig.Towers[tower.Name]
+		if not config then return end
+
+		local gradColor = if tower.Shiny then ReplicatedStorage.Gradients.Shiny.Color elseif ReplicatedStorage.Gradients:FindFirstChild(config.Rarity) then ReplicatedStorage.Gradients[config.Rarity].Color else ReplicatedStorage.Gradients.Common.Color
+
+		local rarity = config.Rarity
+		local rarityLayout = 10-(if table.find(rarities, rarity) then table.find(rarities, rarity) else 0)
+
+		local clonedTemplate = template:Clone()
+		clonedTemplate.Name = tower.ID
+		clonedTemplate.LayoutOrder = if tower.Equipped then rarityLayout-100 else rarityLayout
+		clonedTemplate.TowerPrice.Info.Text = "$ "..config.PlacePrice or "$ 0"
+		clonedTemplate.TowerPrice.ImageColor3 = if tower.Equipped then Color3.fromRGB(0, 255, 0) else Color3.fromRGB(255, 0, 0)
+		clonedTemplate.TowerPrice.Info.TextColor3 = if tower.Equipped then Color3.fromRGB(0, 255, 0) else Color3.fromRGB(255, 0, 0)
+		clonedTemplate.BorderImage.TowerImage.Image = config.Image or ""
+		clonedTemplate.BorderImage.UIGradient.Color = gradColor
+		clonedTemplate.Frame.UIGradient.Color = gradColor
+		clonedTemplate.TowerName.Value = if tower.Enchant and #tower.Enchant > 2 and tower.Shiny then "Special"..tower.Name elseif tower.Shiny then "Shiny"..tower.Name elseif tower.Enchant and #tower.Enchant > 2 then "Special"..tower.Name else tower.Name
+		clonedTemplate.Shiny.Visible = if tower.Shiny then true else false
+		clonedTemplate.Visible = true
+		clonedTemplate.Parent = units
+
+		if tower.Enchant and #tower.Enchant > 2 and ReplicatedStorage.Objects.Enchants:FindFirstChild(tower.Enchant) then
+			local newFrame = ReplicatedStorage.Objects.Enchants[tower.Enchant]:Clone()
+			newFrame.Parent = clonedTemplate
+		end
+
+		Tween:AddButton(clonedTemplate, nil, "ButtonClick", nil, true)
+
+		clonedTemplate.Activated:Connect(function()
+			if frame.DeleteFrame.Visible or frame.ConfirmFrame.Visible then
+			elseif player:FindFirstChild("EnchantTower") then
+				frame.Items.Visible = true
+				frame.Shop.Visible = true
+				frame.Units.Visible = true
+				frame.Quests.Visible = true
+				frame.EnchantText.Visible = false
+				frame.ItemText.Visible = false
+				frame.TradingText.Visible = false
+				player.EnchantTower:Destroy()
+				ReplicatedStorage.Remotes.Misc.Enchant.Bindable:Fire(clonedTemplate.Name)
+			elseif player:FindFirstChild("UsingItem") then
+				frame.Items.Visible = true
+				frame.Shop.Visible = true
+				frame.Units.Visible = true
+				frame.Quests.Visible = true
+				frame.EnchantText.Visible = false
+				frame.ItemText.Visible = false
+				frame.TradingText.Visible = false
+				for _, v in pairs(itemsVisibleChanged) do
+					v.Visible = true
+				end
+				itemsVisibleChanged = {}
+
+				local itemName = player.UsingItem.Value
+				player.UsingItem:Destroy()
+				ReplicatedStorage.Remotes.Misc.UseItem.Bindable:Fire(clonedTemplate.Name, itemName)
+			elseif player:FindFirstChild("TradingItem") then
+				if #units:GetChildren() == 3 then
+					ReplicatedStorage.Remotes.Misc.Alert.Bindable:Fire("You can't trade your only unit!")
+					return
+				end
+				player.TradingItem.Value = clonedTemplate.Name
+				frame.TradeAmount.Visible = true
+			else
+				task.spawn(update, clonedTemplate.Name, true)
+			end
+		end)
+	end
+end
+
+function updateFrame(id)
+	if not id then return end
+	local tower = StateManager.GetData().Towers[id]
+	if not tower or not TowersConfig.Towers[tower.Name] then return end
+	local button = if hasEnchant(tower.Enchant) and not tower.Shiny then units:FindFirstChild(tower.Enchant..tower.Name) elseif hasEnchant(tower.Enchant) and tower.Shiny then units:FindFirstChild("Shiny"..tower.Enchant..tower.Name) elseif tower.Shiny then units:FindFirstChild("Shiny"..tower.Name) else units:FindFirstChild(tower.Name)
+	if not tower or not button then return end
+
+	local rarity = TowersConfig.Towers[tower.Name].Rarity
+	local rarityLayout = 10-(if table.find(rarities, rarity) then table.find(rarities, rarity) else 0)
+	local layoutAdd = 0--if button.LayoutOrder < -50 and not tower.Equipped then 100 else 0
+
+	button.TowerPrice.ImageColor3 = if tower.Equipped then Color3.fromRGB(0, 255, 0) else Color3.fromRGB(255, 0, 0)
+	button.TowerPrice.Info.TextColor3 = if tower.Equipped then Color3.fromRGB(0, 255, 0) else Color3.fromRGB(255, 0, 0)
+
+	button.LayoutOrder = if tower.Equipped then rarityLayout+layoutAdd-100 else rarityLayout+layoutAdd
+
+	if selected == id then
+		task.spawn(update, button.Name, false)
+
+		info.Visible = false
+	end
+end
+
+info.Frame.Equip.Activated:Connect(function()
+	if selected then
+		Remotes.Equip:FireServer(selected)
+	end
+end)
+
+info.Frame.Delete.Activated:Connect(function()
+	if not selected then return end
+	local data = StateManager.GetData()
+	local tower = data.Towers[selected]
+	if not tower then return end
+	local button = if hasEnchant(tower.Enchant) and not tower.Shiny then units:FindFirstChild(tower.Enchant..tower.Name) elseif hasEnchant(tower.Enchant) and tower.Shiny then units:FindFirstChild("Shiny"..tower.Enchant..tower.Name) elseif tower.Shiny then units:FindFirstChild("Shiny"..tower.Name) else units:FindFirstChild(tower.Name)
+	if not tower or not button then return end
+
+	if selected and tower and button then
+		if button.Info.Visible then
+			frame.DeleteFrame.Visible = true
+		else
+			frame.ConfirmFrame.Message.Text = `Are you sure you want to sell {tower.Shiny and "Shiny "..tower.Name or tower.Name}?`
+			frame.ConfirmFrame.Visible = true
+			deleting = -1
+		end
+	end
+end)
+
+info.Frame.Info.Activated:Connect(function()
+	if not selected then return end
+	Remotes.ShowInfo:Fire(selected)
+end)
+
+frame.TradeAmount.Confirm.Activated:Connect(function()
+	frame.Items.Visible = true
+	frame.Shop.Visible = true
+	frame.Units.Visible = true
+	frame.Quests.Visible = true
+	frame.EnchantText.Visible = false
+	frame.ItemText.Visible = false
+	frame.TradingText.Visible = false
+	frame.TradeAmount.Visible = false
+	if player:FindFirstChild("TradingItem") then
+		ReplicatedStorage.Remotes.Trading.Trade.Bindable:Fire(player.TradingItem.Value, frame.TradeAmount.Enter.TextBox.Text)
+		player.TradingItem:Destroy()
+	end
+end)
+
+frame.TradeAmount.Exit.Activated:Connect(function()
+	frame.TradeAmount.Visible = false
+end)
+
+frame.DeleteFrame.Confirm.Activated:Connect(function()
+	deleting = frame.DeleteFrame.Enter.TextBox.Text
+	frame.DeleteFrame.Visible = false
+	frame.ConfirmFrame.Visible = true
+
+	deleting = tonumber(deleting)
+	if not deleting then deleting = 1 end
+	local addS = if deleting > 1 then "s" else ""
+	local data = StateManager.GetData()
+	local tower = data.Towers[selected]
+
+	if deleting == -1 then
+		frame.ConfirmFrame.Message.Text = "Are you sure you want to sell "..tower.Name.."?"
+	else
+		frame.ConfirmFrame.Message.Text = "Are you sure you want to sell "..deleting.." "..tower.Name..addS.."?"
+	end
+end)
+
+frame.DeleteFrame.Exit.Activated:Connect(function()
+	frame.DeleteFrame.Visible = false
+	deleting = 0
+	frame.ConfirmFrame.Visible = false
+	selected = nil
+	info.Visible = false
+end)
+
+frame.ConfirmFrame.Yes.Activated:Connect(function()
+	if deleting == -1 then
+		Remotes.Delete:FireServer(selected)
+	else
+		Remotes.Delete:FireServer(selected, deleting)
+	end
+	deleting = 0
+	frame.ConfirmFrame.Visible = false
+	selected = nil
+	info.Visible = false
+end)
+
+frame.ConfirmFrame.No.Activated:Connect(function()
+	deleting = 0
+	frame.ConfirmFrame.Visible = false
+end)
+
+frame.ConfirmFrame.No.Activated:Connect(function()
+	frame.ConfirmFrame.Visible = false
+end)
+
+frame.UnequipAll.Activated:Connect(function()
+	Remotes.Equip:FireServer("UnequipAll")
+end)
+
+frame.Search.TextBox:GetPropertyChangedSignal("Text"):Connect(function()
+	local searched: string  = frame.Search.TextBox.Text:lower()
+	local findShiny: boolean = searched:match("shiny") ~= nil and true or false
+	local _, findShiny2 = searched:find("shiny ")
+
+	for _, tower in units:GetChildren() do
+		if not tower:IsA("ImageButton") then continue end
+		tower.Visible = false
+		if findShiny and not tower.Shiny then
+			continue
+		end
+		if findShiny and #frame.Search.TextBox.Text == 5 then
+			tower.Visible = true
+			continue
+		end
+		if findShiny2 then
+			searched = searched:sub(findShiny2+1, #searched)
+		end
+		if tower.Name:lower():match(searched) then
+			tower.Visible = true
+		end
+	end
+	searched = nil
+	findShiny = nil
+	findShiny2 = nil
+end)
+
+Remotes.Give.OnClientEvent:Connect(function(tower)
+	--task.spawn(generate, tower)
+	task.defer(updateInv)
+end)
+
+Remotes.Delete.OnClientEvent:Connect(function(towerName, amt)
+	--task.spawn(generate, towerName, amt, nil, true)
+	task.defer(updateInv)
+end)
+
+Remotes.Enchanted.OnClientEvent:Connect(function(tower)
+	--task.spawn(generate, tower, nil, true)
+	task.defer(updateInv)
+end)
+
+Remotes.TowerUpdated.OnClientEvent:Connect(function(tower)
+	--task.spawn(generate, tower, nil, true)
+	task.defer(updateInv)
+end)
+
+Remotes.Equip.OnClientEvent:Connect(function(towerName)
+	task.spawn(updateFrame, towerName)
+end)
+
+Remotes.Unequip.OnClientEvent:Connect(function(towerName)
+	task.spawn(updateFrame, towerName)
+end)
+
+frame:GetPropertyChangedSignal("Visible"):Connect(function()
+	if UIS.GamepadEnabled then
+		if frame.Visible then
+			game:GetService("GamepadService"):EnableGamepadCursor(frame)
+		else
+			game:GetService("GamepadService"):DisableGamepadCursor()
+		end
+	end
+
+	if not frame.Visible then
+		frame.Items.Visible = true
+		frame.Shop.Visible = true
+		frame.Units.Visible = true
+		frame.EnchantText.Visible = false
+		frame.ItemText.Visible = false
+		frame.TradingText.Visible = false
+
+		for _, v in pairs(itemsVisibleChanged) do
+			v.Visible = true
+		end
+
+		if player:FindFirstChild("CurrentlyTrading") and not playerGui:WaitForChild("Trade"):WaitForChild("TradeFrame").Visible then
+			Tween:AddButton("Open", playerGui:WaitForChild("Trade"):WaitForChild("TradeFrame"))
+		end
+	end
+end)
+
+frame.Exit.Activated:Connect(function()
+	if player:FindFirstChild("EnchantTower") then
+		player.EnchantTower:Destroy()
+	end
+	if player:FindFirstChild("UsingItem") then
+		player.UsingItem:Destroy()
+	end
+	if player:FindFirstChild("TradingItem") then
+		player.TradingItem:Destroy()
+	end
+	frame.Items.Visible = true
+	frame.Shop.Visible = true
+	frame.Units.Visible = true
+	frame.Quests.Visible = true
+	frame.EnchantText.Visible = false
+	frame.ItemText.Visible = false
+
+	for _, v in pairs(itemsVisibleChanged) do
+		v.Visible = true
+	end
+end)
+
+ReplicatedStorage.Remotes.PlayerData.UpdateData.OnClientEvent:Connect(function()
+	local data = StateManager.GetData()
+	frame.Inventory.TextLabel.Text = TowersModule.GetStorage(data).."/"..TowersModule.GetMaxStorage(data)
+end)
+
+ReplicatedStorage.Remotes.Misc.Enchant.Bindable.Event:Connect(function(numb)
+	if numb ~= 1 then return end
+	units.Visible = true
+	holder.Items.Visible = false
+	holder.Shop.Visible = false
+	holder.Quests.Visible = false
+	info.Visible = false
+	frame.OpenPresent.Visible = false
+
+	frame.Items.Visible = false
+	frame.Shop.Visible = false
+	frame.Units.Visible = false
+	frame.Quests.Visible = false
+	frame.EnchantText.Visible = true
+	frame.ItemText.Visible = false
+	frame.TradingText.Visible = false
+	Tween:AddButton("Open", frame)
+end)
+
+ReplicatedStorage.Remotes.Misc.UseItem.Bindable.Event:Connect(function(numb, itemName)
+	if numb ~= 1 then return end
+	units.Visible = true
+	holder.Items.Visible = false
+	holder.Shop.Visible = false
+	holder.Quests.Visible = false
+	info.Visible = false
+	frame.OpenPresent.Visible = false
+
+	frame.Items.Visible = false
+	frame.Shop.Visible = false
+	frame.Units.Visible = false
+	frame.Quests.Visible = false
+	frame.EnchantText.Visible = false
+	frame.ItemText.Visible = true
+	frame.TradingText.Visible = false
+	Tween:AddButton("Open", frame)
+
+	if string.find(itemName, "Remnant") then
+		local rarity = string.gsub(itemName, "Remnant", "")
+		local data = StateManager.GetData()
+		for _, v in pairs(units:GetChildren()) do
+			local tower = data.Towers[v.Name]
+			if not tower then continue end
+			if tower.Shiny or not TowersConfig.Towers[tower.Name] or TowersConfig.Towers[tower.Name].Rarity ~= rarity then
+				if v.Visible then
+					if not itemsVisibleChanged[v] then
+						itemsVisibleChanged[v] = v
+					end
+					v.Visible = false
+				end
+			else
+				v.Visible = true
+			end
+		end
+	end
+end)
+
+ReplicatedStorage.Remotes.Trading.Trade.Bindable.Event:Connect(function(numb, items)
+	if numb ~= 1 then return end
+	units.Visible = true
+	holder.Items.Visible = false
+	holder.Shop.Visible = false
+	holder.Quests.Visible = false
+	info.Visible = false
+	frame.OpenPresent.Visible = false
+
+	frame.Items.Visible = true
+	frame.Shop.Visible = false
+	frame.Units.Visible = true
+	frame.Quests.Visible = false
+	frame.TradingText.Visible = true
+	frame.EnchantText.Visible = false
+	frame.ItemText.Visible = false
+	Tween:AddButton("Open", frame)
+end)
+
+ReplicatedStorage.Remotes.Towers.MetaData.OnClientEvent:Connect(function(newMetaData: string)
+	if not newMetaData then return end
+	local success = pcall(function()
+		newMetaData = game:GetService("HttpService"):JSONDecode(newMetaData)
+		if not newMetaData then
+			error(0)
+		end
+		TowersConfig.Towers = newMetaData
+	end)
+	if not success then
+		warn("Failed to update Client MetaData.")
+	end
+	success = nil
+end)
+
+frame.Units.Activated:Connect(function()
+	units.Visible = true
+	holder.Items.Visible = false
+	holder.Shop.Visible = false
+	holder.Quests.Visible = false
+	info.Visible = false
+	frame.OpenPresent.Visible = false
+	frame.UnequipAll.Visible = true
+	frame.Search.Visible = true
+	task.spawn(updateInv)
+end)
+
+inventoryButton.Activated:Connect(function()
+	task.spawn(updateInv)
+end)
+
+units.Visible = true
+holder.Items.Visible = false
+holder.Shop.Visible = false
+holder.Quests.Visible = false
+
+Tween:AddButton(frame.Exit, frame, "ButtonClick")
+Tween:AddButton(inventoryButton, frame, "ButtonClick", true)
+Tween:AddButton(frame.Units, nil, "ButtonClick")
+Tween:AddButton(info.Frame.Equip, nil, "ButtonClick")
+Tween:AddButton(frame.ConfirmFrame.Yes, nil, "ButtonClick")
+Tween:AddButton(frame.ConfirmFrame.No, nil, "ButtonClick")
+Tween:AddButton(info.Frame.Delete, nil, "ButtonClick")
+Tween:AddButton(info.Frame.Info, nil, "ButtonClick")
+Tween:AddButton(frame.TradeAmount.Confirm, nil, "ButtonClick")
+Tween:AddButton(frame.TradeAmount.Exit, nil, "ButtonClick")
+Tween:AddButton(frame.DeleteFrame.Exit, nil, "ButtonClick")
+Tween:AddButton(frame.UnequipAll, nil, "ButtonClick")
+
+task.delay(2, updateInv)
